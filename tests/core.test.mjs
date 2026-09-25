@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { checkDigitOk, upcEToUpcA, normalizeBarcode } from '../lib/gtin.js';
+import { checkDigitOk, upcEToUpcA, normalizeBarcode, sameBarcode } from '../lib/gtin.js';
 import { normalizeUsda, normalizeOff, pickUsdaMatch, mergeRecords, sanityCheck } from '../lib/lookup.js';
 import { assess, parseTerms, findTerms, portionFat, dayTotal } from '../lib/score.js';
+import { validateManual, applyManual, whyNoFat } from '../lib/manual.js';
 
 const fx = (n) => JSON.parse(readFileSync(new URL(`./fixtures/${n}`, import.meta.url), 'utf8'));
 
@@ -63,6 +64,41 @@ test('UPC-E is expanded when the scanner says upc_e', () => {
   const r = normalizeBarcode('01234565', 'upc_e');
   assert.ok(r.ok);
   assert.equal(r.code, '012345000065');
+});
+
+test('USDA stores barcodes as 8, 11, 12, 13 or 14 digits: every form is searched and matched', () => {
+  const upcA = normalizeBarcode('012000222412'); // seen stored as 12 digits
+  assert.deepEqual(new Set(upcA.forms), new Set(['00012000222412', '012000222412', '0012000222412', '12000222412']));
+  const fromScanner = normalizeBarcode('0012000222412', 'ean_13'); // scanner reports the 13-digit form
+  assert.deepEqual(new Set(fromScanner.forms), new Set(upcA.forms));
+  // a record stored under ANY of those forms is the same product
+  for (const stored of ['00012000222412', '0012000222412', '012000222412', '12000222412']) {
+    const json = { foods: [{ gtinUpc: stored, description: 'X', modifiedDate: '2020-01-01' }] };
+    assert.ok(pickUsdaMatch(json, upcA.forms), stored);
+  }
+  // ...but a different product never is, and non-zero digits are never dropped
+  assert.equal(pickUsdaMatch({ foods: [{ gtinUpc: '012000222413' }] }, upcA.forms), null);
+  assert.ok(!sameBarcode('12000222412', '212000222412'));
+  const gtin14 = normalizeBarcode('10012000222417'); // GTIN-14 with an indicator digit
+  if (gtin14.ok) assert.ok(!gtin14.forms.includes('0012000222417'));
+});
+
+test('USDA records holding a UPC without its check digit are found, exactly and only', () => {
+  const r = normalizeBarcode('038000817717'); // real US UPC; USDA stores it as 03800081771
+  assert.ok(r.ok);
+  assert.deepEqual(r.exactForms, ['03800081771']);
+  assert.ok(pickUsdaMatch({ foods: [{ gtinUpc: '03800081771' }] }, r.forms, r.exactForms));
+  assert.equal(pickUsdaMatch({ foods: [{ gtinUpc: '03800081772' }] }, r.forms, r.exactForms), null); // one digit off
+  assert.equal(pickUsdaMatch({ foods: [{ gtinUpc: '3800081771' }] }, r.forms, r.exactForms), null); // zero-stripped guess is NOT accepted
+  assert.deepEqual(normalizeBarcode('3017620422003').exactForms, []); // EAN-13: no such form
+});
+
+test('an 8-digit UPC-E keeps its raw form so a record stored that way is found', () => {
+  const r = normalizeBarcode('01201303', 'upc_e');
+  assert.ok(r.ok);
+  assert.ok(r.forms.includes('01201303'));
+  assert.ok(r.forms.includes('012000000133'));
+  assert.ok(pickUsdaMatch({ foods: [{ gtinUpc: '01201303' }] }, r.forms));
 });
 
 test('in-store price-embedded labels are recognised', () => {
@@ -285,4 +321,53 @@ test('portionFat with servings default of 1 and bad input', () => {
 test('dayTotal sums only that day', () => {
   const log = [{ day: '2026-09-25', fatG: 3 }, { day: '2026-09-25', fatG: 2.5 }, { day: '2026-09-24', fatG: 9 }];
   assert.equal(dayTotal(log, '2026-09-25'), 5.5);
+});
+
+// ---- typed-in label numbers -----------------------------------------------
+
+test('manual entry: validation catches missing, absurd and inconsistent numbers', () => {
+  assert.equal(validateManual({ fat: '' }).ok, false);
+  assert.equal(validateManual({ fat: 'abc' }).ok, false);
+  assert.equal(validateManual({ fat: '-1' }).ok, false);
+  assert.equal(validateManual({ fat: '250' }).ok, false);
+  assert.equal(validateManual({ fat: '3', sat: '9' }).ok, false); // sat > fat
+  assert.equal(validateManual({ fat: '3' }, { needName: true }).ok, false); // name required when unknown product
+  const ok = validateManual({ fat: '3,5', sat: '1.5', serving: ' 1 cup (30 g) ', name: '' });
+  assert.ok(ok.ok);
+  assert.equal(ok.value.fatServing, 3.5); // decimal comma accepted
+  assert.equal(ok.value.satFatServing, 1.5);
+  assert.equal(ok.value.servingText, '1 cup (30 g)');
+  assert.equal(validateManual({ fat: '0' }).ok, true); // "0 g" is a real answer
+});
+
+test('manual entry replaces the database numbers, is label-trusted, and can go green', () => {
+  const dbProduct = { name: 'Chips', brand: 'B', ingredients: 'potatoes, oil', fatServing: null, fat100: null, source: 'Open Food Facts', trust: 'unverified', barcode: '1' };
+  const manual = validateManual({ fat: '2', sat: '0.5', serving: '1 oz' }).value;
+  const p = applyManual(dbProduct, manual, '1');
+  assert.equal(p.fatServing, 2);
+  assert.equal(p.trust, 'label');
+  assert.equal(p.name, 'Chips'); // keeps the database's name and ingredients
+  assert.equal(p.ingredients, 'potatoes, oil');
+  assert.deepEqual(p.alsoFound, ['Open Food Facts']);
+  assert.equal(assess({ product: p, portion: {}, settings: S() }).level, 'green');
+  // an unknown product gets the name she typed
+  const named = applyManual(null, validateManual({ fat: '4', name: 'Deli salad' }, { needName: true }).value, '2');
+  assert.equal(named.name, 'Deli salad');
+  assert.equal(named.ingredients, '');
+});
+
+test('manual entry does not carry over old per-100 g, conflicts or child-serving flags', () => {
+  const messy = { name: 'X', fat100: 30, fatServing: 9, conflict: { usedSource: 'y' }, childServing: true, fatServingComputed: true, warnings: ['w'], source: 'USDA FoodData Central' };
+  const p = applyManual(messy, validateManual({ fat: '1' }).value, '3');
+  assert.equal(p.fat100, null);
+  assert.equal(p.conflict, null);
+  assert.equal(p.childServing, false);
+  assert.equal(p.fatServingComputed, false);
+  assert.deepEqual(p.warnings, []);
+});
+
+test('whyNoFat explains which database had what', () => {
+  assert.match(whyNoFat({ source: 'Open Food Facts', alsoFound: [] }, []), /Open Food Facts has this product, but no fat figure.*USDA has no record/);
+  assert.match(whyNoFat({ source: 'Open Food Facts', alsoFound: [] }, [{ source: 'USDA', message: 'rate limit' }]), /USDA could not be checked/);
+  assert.match(whyNoFat({ source: 'USDA FoodData Central', alsoFound: ['Open Food Facts'] }, []), /USDA FoodData Central and Open Food Facts have this product/);
 });

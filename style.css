@@ -117,6 +117,10 @@ label { display: block; font-weight: 600; margin-bottom: 6px; }
   border: 3px solid rgba(255,255,255,.9); border-radius: 12px;
   box-shadow: 0 0 0 100vmax rgba(0,0,0,.35);
 }
+.vf-tools { position: absolute; right: 10px; bottom: 10px; display: flex; gap: 8px; }
+.vf-tools .chip { background: rgba(0,0,0,.6); color: #fff; border-color: rgba(255,255,255,.4); min-height: 40px; }
+.vf-tools .chip[aria-pressed="true"] { background: #f0c020; color: #111; border-color: #f0c020; }
+.manual-form > * + * { margin-top: 12px; }
 .status { text-align: center; color: var(--muted); }
 .status.err { color: var(--red); }
 .manual { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }

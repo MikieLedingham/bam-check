@@ -2,7 +2,8 @@ import { store, localDayKey } from './lib/store.js';
 import { lookupBarcode } from './lib/lookup.js';
 import { assess, dayTotal, parseTerms, termRegex } from './lib/score.js';
 import { normalizeBarcode } from './lib/gtin.js';
-import { Scanner, cameraSupported, describeCameraError, prepareDecoder } from './lib/scanner.js';
+import { applyManual, validateManual, whyNoFat } from './lib/manual.js';
+import { Scanner, cameraSupported, describeCameraError, prepareDecoder, decodeImageFile } from './lib/scanner.js';
 
 const $ = (sel) => document.querySelector(sel);
 const APP_VERSION = '0.1.0';
@@ -36,6 +37,11 @@ const el = {
   toast: $('#toast'),
   recentBox: $('#recentBox'),
   recentList: $('#recentList'),
+  tools: $('#vfTools'),
+  torchBtn: $('#torchBtn'),
+  zoomBtn: $('#zoomBtn'),
+  photoBtn: $('#photoBtn'),
+  photoInput: $('#photoInput'),
 };
 
 let toastTimer;
@@ -93,10 +99,14 @@ function setStatus(msg, isErr = false) {
   el.status.classList.toggle('err', isErr);
 }
 
+let hintTimer;
+let torchOn = false;
+let zoomLevel = 1;
+
 async function startCamera() {
   clearResult();
   if (!cameraSupported()) {
-    setStatus('This browser cannot use the camera here. Type the number under the barcode instead.', true);
+    setStatus('This browser cannot use the camera here. Take a photo or type the number instead.', true);
     return;
   }
   setStatus('Starting camera...');
@@ -105,6 +115,11 @@ async function startCamera() {
     await scanner.start();
     el.viewfinder.hidden = false;
     setStatus('Hold the barcode inside the box, about 6-8 inches away.');
+    setupCameraTools();
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => {
+      if (scanner.running) setStatus('Not reading? Move back a little, keep the barcode flat, add light - or use "Take a photo" or type the number below.');
+    }, 9000);
   } catch (err) {
     el.viewfinder.hidden = true;
     el.startBtn.hidden = false;
@@ -112,7 +127,20 @@ async function startCamera() {
   }
 }
 
+// Light and zoom buttons appear only where this phone's browser supports them.
+function setupCameraTools() {
+  const c = scanner.controls();
+  torchOn = false;
+  zoomLevel = 1;
+  el.torchBtn.hidden = !c.torch;
+  el.zoomBtn.hidden = !c.zoom;
+  el.tools.hidden = !(c.torch || c.zoom);
+  el.torchBtn.setAttribute('aria-pressed', 'false');
+  el.zoomBtn.textContent = 'Zoom 1x';
+}
+
 function stopCamera() {
+  clearTimeout(hintTimer);
   scanner.stop();
   el.viewfinder.hidden = true;
   el.startBtn.hidden = false;
@@ -168,9 +196,12 @@ async function handleBarcode(raw, format = '') {
   const res = await lookupBarcode(raw, { usdaKey: settings.usdaKey, format });
   if (token !== state.token) return; // user moved on
 
-  if (res.product) {
-    state.cur = { product: res.product, portion: { servings: 1, grams: null }, errors: res.errors, saved: null };
-    store.remember(res.product); // saved copy for when there is no signal
+  // Numbers she typed in from this pack earlier win over the databases.
+  const typed = store.manualFor(bc.code);
+  const product = typed ? applyManual(res.product, typed, bc.code) : res.product;
+  if (product) {
+    state.cur = { product, dbProduct: res.product, portion: { servings: 1, grams: null }, errors: res.errors, saved: null };
+    store.remember(product); // saved copy for when there is no signal
     renderResult();
     return;
   }
@@ -180,19 +211,42 @@ async function handleBarcode(raw, format = '') {
   if (allFailed) {
     const saved = store.recentFor(bc.code);
     if (saved) {
-      state.cur = { product: saved.product, portion: { servings: 1, grams: null }, errors: res.errors, saved: saved.at };
+      state.cur = { product: saved.product, dbProduct: null, portion: { servings: 1, grams: null }, errors: res.errors, saved: saved.at };
       renderResult();
       return;
     }
     showResultShell(messageCard("Couldn't reach the food databases",
-      `No signal, or both services are busy (${res.errors.map((e) => `${esc(e.source)}: ${esc(e.message)}`).join('; ')}). Try again in a moment, or read the label on the pack.`));
+      `No signal, or both services are busy (${res.errors.map((e) => `${esc(e.source)}: ${esc(e.message)}`).join('; ')}).${rateHint(res.errors)} Try again in a moment, or type the fat from the pack below.`,
+      manualFormHtml(bc.code, { needName: true })));
     return;
   }
   const partial = res.errors.length
-    ? `<div class="warn">${esc(res.errors[0].source)} could not be checked (${esc(res.errors[0].message)}), so this may be a gap in the search, not in the databases.</div>`
+    ? `<div class="warn">${esc(res.errors[0].source)} could not be checked (${esc(res.errors[0].message)}), so this may be a gap in the search, not in the databases.${esc(rateHint(res.errors))}</div>`
     : '';
+  state.cur = null;
   showResultShell(messageCard('Not found',
-    `Barcode <b>${esc(bc.code)}</b> isn't in the USDA or Open Food Facts databases, so there is nothing to judge it by. Read the fat on the pack's label instead.`, partial));
+    `Barcode <b>${esc(bc.code)}</b> isn't in the USDA or Open Food Facts databases. Type the fat from the pack's Nutrition Facts below and it will be remembered for next time.`,
+    partial + manualFormHtml(bc.code, { needName: true })));
+}
+
+// A shared demo key gets rate-limited quickly; her own free key does not.
+function rateHint(errors) {
+  const limited = errors.some((e) => /rate limit/i.test(e.message));
+  return limited && !store.settings().usdaKey ? ' Add your free USDA key in Settings to fix this.' : '';
+}
+
+function manualFormHtml(barcode, { needName = false, prefill = {}, bare = false } = {}) {
+  return `<form class="${bare ? '' : 'card '}manual-form" data-manual="${esc(barcode)}" autocomplete="off">
+    ${bare ? '' : '<h3>Type it in from the pack</h3><p class="hint">Find "Total Fat" on the Nutrition Facts label. It is saved on this phone for next time.</p>'}
+    ${needName ? `<div class="field"><label for="m-name">What is it?</label><input id="m-name" type="text" maxlength="80" value="${esc(prefill.name || '')}" placeholder="e.g. Sea salt kettle chips"></div>` : ''}
+    <div class="split">
+      <div class="field"><label for="m-fat">Total fat (g)</label><input id="m-fat" type="number" inputmode="decimal" min="0" max="200" step="0.1" value="${esc(prefill.fat ?? '')}"></div>
+      <div class="field"><label for="m-sat">Saturated fat (g)</label><input id="m-sat" type="number" inputmode="decimal" min="0" max="200" step="0.1" value="${esc(prefill.sat ?? '')}"></div>
+    </div>
+    <div class="field"><label for="m-serv">Serving size on the pack</label><input id="m-serv" type="text" maxlength="60" value="${esc(prefill.serv || '')}" placeholder="e.g. 1 cup (30 g)"></div>
+    <p id="m-error" class="status err" role="alert" hidden></p>
+    <button class="btn primary big" type="submit">Save and use</button>
+  </form>`;
 }
 
 // ---------------------------------------------------------------- result
@@ -224,8 +278,25 @@ function renderResult() {
     ? `<div class="warn">No signal - showing the copy saved on ${esc(new Date(saved).toLocaleDateString())}. Data may be out of date.</div>`
     : '';
   const partial = (state.cur.errors || []).length && !saved
-    ? `<div class="warn">${esc(state.cur.errors.map((e) => e.source).join(' and '))} could not be checked just now (${esc(state.cur.errors[0].message)}). This answer comes from ${esc(p.source)} only.</div>`
+    ? `<div class="warn">${esc(state.cur.errors.map((e) => e.source).join(' and '))} could not be checked just now (${esc(state.cur.errors[0].message)}). This answer comes from ${esc(p.source)} only.${esc(rateHint(state.cur.errors))}</div>`
     : '';
+
+  // No fat figure anywhere -> say why and let her type it from the pack.
+  // Otherwise offer a way to correct the numbers if they don't match the pack.
+  const noFat = !hasServing && !per100Only;
+  const prefill = { name: p.name, fat: p.manual ? p.fatServing : '', sat: p.manual ? p.satFatServing : '', serv: p.manual ? p.servingText : '' };
+  let manualBlock;
+  if (noFat) {
+    manualBlock = `<div class="warn">${esc(whyNoFat(p, state.cur.errors || []))}</div>${manualFormHtml(p.barcode, { needName: !p.name })}`;
+  } else {
+    manualBlock = `${p.manual
+      ? `<div class="notice">You typed these numbers from the pack (${esc(p.updated || '')}). <button class="link" type="button" data-act="manual-remove">Remove them and use the database again</button></div>`
+      : ''}
+      <details class="more"><summary>${p.manual ? 'Change the numbers' : "Numbers wrong or don't match the pack?"}</summary><div class="body">
+        <p class="muted" style="margin-bottom:12px">Type what the pack says. It replaces the database's numbers for this product, on this phone.</p>
+        ${manualFormHtml(p.barcode, { prefill, bare: true })}
+      </div></details>`;
+  }
 
   let portion = '';
   if (hasServing) {
@@ -271,10 +342,12 @@ function renderResult() {
     <div id="verdictBox"></div>
     ${portion}
     ${notes.map((n) => `<div class="warn">${n}</div>`).join('')}
+    ${noFat ? manualBlock : ''}
     <div class="actions">
       <button class="btn primary big" type="button" id="ateBtn" data-act="ate">I ate this</button>
       <button class="btn big" type="button" data-act="scan-again">Scan another</button>
     </div>
+    ${noFat ? '' : manualBlock}
     <details class="more"><summary>Ingredients</summary><div class="body">${
       p.ingredients ? highlight(p.ingredients, settings.avoid, settings.watch) : '<span class="muted">No ingredient list was found for this product.</span>'
     }</div></details>
@@ -521,6 +594,11 @@ document.addEventListener('click', (e) => {
       state.cur.portion.confirmed = true;
       return renderVerdict();
     case 'ate': return logCurrent();
+    case 'manual-remove': {
+      const code = state.cur?.product?.barcode;
+      if (code) { store.clearManual(code); handleBarcode(code); }
+      return;
+    }
     case 'export': return exportBackup();
     case 'wipe':
       if (confirm('Erase your targets, log and saved products from this phone? This cannot be undone.')) {
@@ -556,7 +634,71 @@ document.addEventListener('change', (e) => {
   }
 });
 
+// Save fat numbers typed in from the pack.
+document.addEventListener('submit', (e) => {
+  const form = e.target.closest('form[data-manual]');
+  if (!form) return;
+  e.preventDefault();
+  const barcode = form.dataset.manual;
+  const nameEl = form.querySelector('#m-name');
+  const needName = Boolean(nameEl);
+  const v = validateManual({
+    fat: form.querySelector('#m-fat').value,
+    sat: form.querySelector('#m-sat').value,
+    serving: form.querySelector('#m-serv').value,
+    name: nameEl ? nameEl.value : '',
+  }, { needName });
+  const err = form.querySelector('#m-error');
+  if (!v.ok) { err.textContent = v.error; err.hidden = false; return; }
+  err.hidden = true;
+
+  store.setManual(barcode, v.value);
+  const base = state.cur?.dbProduct ?? state.cur?.product ?? null;
+  const product = applyManual(base, v.value, barcode);
+  state.cur = { product, dbProduct: state.cur?.dbProduct ?? null, portion: { servings: 1, grams: null }, errors: state.cur?.errors || [], saved: null };
+  store.remember(product);
+  toast('Saved for next time');
+  renderResult();
+  window.scrollTo(0, 0);
+});
+
 el.startBtn.addEventListener('click', startCamera);
+
+el.torchBtn.addEventListener('click', async () => {
+  const want = !torchOn;
+  if (await scanner.setTorch(want)) {
+    torchOn = want;
+    el.torchBtn.setAttribute('aria-pressed', String(torchOn));
+  }
+});
+
+el.zoomBtn.addEventListener('click', async () => {
+  const z = scanner.controls().zoom;
+  if (!z) return;
+  const want = zoomLevel === 1 ? Math.min(2, z.max) : 1;
+  if (await scanner.setZoom(want)) {
+    zoomLevel = want;
+    el.zoomBtn.textContent = `Zoom ${zoomLevel}x`;
+  }
+});
+
+// Photo mode: the phone's own camera app focuses and exposes better than a
+// live web stream, and we read the barcode from the picture.
+el.photoBtn.addEventListener('click', () => el.photoInput.click());
+el.photoInput.addEventListener('change', async () => {
+  const file = el.photoInput.files?.[0];
+  el.photoInput.value = '';
+  if (!file) return;
+  stopCamera();
+  setStatus('Reading the photo...');
+  try {
+    const hit = await decodeImageFile(file);
+    if (hit) return handleBarcode(hit.rawValue, hit.format);
+    setStatus("Couldn't find a barcode in that photo. Get close so the barcode fills most of the picture (flat, in focus, good light) and try again - or type the number.", true);
+  } catch (err) {
+    setStatus(`Couldn't read that photo (${err.message || err}). You can type the number instead.`, true);
+  }
+});
 
 el.manualForm.addEventListener('submit', (e) => {
   e.preventDefault();

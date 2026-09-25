@@ -35,9 +35,15 @@
       <div class="viewfinder" id="viewfinder" hidden>
         <video id="video" playsinline muted autoplay></video>
         <div class="guide" aria-hidden="true"></div>
+        <div class="vf-tools" id="vfTools" hidden>
+          <button id="torchBtn" class="chip" type="button" aria-pressed="false" hidden>Light</button>
+          <button id="zoomBtn" class="chip" type="button" hidden>Zoom 1x</button>
+        </div>
       </div>
       <p id="scanStatus" class="status" role="status">Point the camera at a food's barcode.</p>
       <button id="startBtn" class="btn primary big" type="button">Start camera</button>
+      <button id="photoBtn" class="btn big" type="button">Take a photo of the barcode instead</button>
+      <input id="photoInput" type="file" accept="image/*" capture="environment" hidden>
 
       <form id="manualForm" class="manual" autocomplete="off">
         <label for="manualInput">Or type the number under the barcode</label>

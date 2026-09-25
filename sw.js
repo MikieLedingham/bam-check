@@ -1,7 +1,7 @@
 // Keeps the app itself (not food data) available with no signal.
 // Stale-while-revalidate: open instantly from the cache, refresh it in the
 // background so the next launch has any update.
-const CACHE = 'bam-check-v1';
+const CACHE = 'bam-check-v2';
 const SHELL = [
   './',
   'index.html',
@@ -9,6 +9,7 @@ const SHELL = [
   'app.js',
   'lib/gtin.js',
   'lib/lookup.js',
+  'lib/manual.js',
   'lib/score.js',
   'lib/scanner.js',
   'lib/store.js',
