@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BAM Check</title>
+<meta name="description" content="Scan a food barcode and see how much fat it has against your daily budget.">
+<meta name="theme-color" content="#1e6f5c">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="BAM Check">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <h1>BAM Check</h1>
+  <button id="budgetChip" class="chip" type="button" data-goto="today" aria-label="Today's fat total"></button>
+</header>
+
+<main>
+  <!-- ============ SCAN ============ -->
+  <section id="tab-scan" class="tab" aria-label="Scan">
+    <div id="setupNotice" class="notice" hidden>
+      <strong>No daily fat target set yet.</strong>
+      You'll see the fat numbers for each food, but no green / amber / red until your target is added in
+      <button class="link" type="button" data-goto="settings">Settings</button>.
+    </div>
+
+    <div id="scanner">
+      <div class="viewfinder" id="viewfinder" hidden>
+        <video id="video" playsinline muted autoplay></video>
+        <div class="guide" aria-hidden="true"></div>
+      </div>
+      <p id="scanStatus" class="status" role="status">Point the camera at a food's barcode.</p>
+      <button id="startBtn" class="btn primary big" type="button">Start camera</button>
+
+      <form id="manualForm" class="manual" autocomplete="off">
+        <label for="manualInput">Or type the number under the barcode</label>
+        <div class="row">
+          <input id="manualInput" inputmode="numeric" pattern="[0-9 \-]*" maxlength="20" placeholder="e.g. 016000275287">
+          <button class="btn" type="submit">Look up</button>
+        </div>
+      </form>
+
+      <details id="recentBox" class="recent" hidden>
+        <summary>Recently scanned</summary>
+        <ul id="recentList"></ul>
+      </details>
+    </div>
+
+    <div id="result" hidden></div>
+  </section>
+
+  <!-- ============ TODAY ============ -->
+  <section id="tab-today" class="tab" aria-label="Today" hidden></section>
+
+  <!-- ============ SETTINGS ============ -->
+  <section id="tab-settings" class="tab" aria-label="Settings" hidden></section>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<nav class="tabs" aria-label="Sections">
+  <button type="button" data-tab="scan" aria-current="page"><span aria-hidden="true">&#9636;</span>Scan</button>
+  <button type="button" data-tab="today"><span aria-hidden="true">&#9776;</span>Today</button>
+  <button type="button" data-tab="settings"><span aria-hidden="true">&#9881;</span>Settings</button>
+</nav>
+
+<script src="vendor/barcode-detector.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

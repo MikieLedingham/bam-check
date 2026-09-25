@@ -1,0 +1,16 @@
+{
+  "name": "BAM Check",
+  "short_name": "BAM Check",
+  "description": "Scan a food barcode and see how much fat it has against your daily budget.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f7f5",
+  "theme_color": "#1e6f5c",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
